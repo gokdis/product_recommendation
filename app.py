@@ -1,5 +1,7 @@
 from flask import Flask, request, jsonify
 import pandas as pd
+from mlxtend.frequent_patterns import apriori, association_rules
+import json
 
 cell_df = pd.DataFrame([{"x":0,"y":0,"sectionId":"e5650acf-0597-461c-85b8-5679c76df7ac"},
              {"x":0,"y":1,"sectionId":"e5650acf-0597-461c-85b8-5679c76df7ac"},
@@ -93,17 +95,74 @@ product_df = pd.DataFrame([{"id":"3a3d1d46-b1ef-4154-b88c-035d16e46ac2","section
 
 merged_df = pd.merge(position_df, cell_df, on=['x', 'y'])
 
-# Step 2: Find the section ID from cell data
 merged_with_section_names = pd.merge(merged_df, section_df, left_on='sectionId', right_on='id')
 
-# Step 3: Find the section name from section data using section ID
 merged_df = pd.merge(merged_df, section_df, left_on='sectionId', right_on='id')
 
+orders_df = pd.merge(order_df, product_df,left_on='productId', right_on='id')
+
+orders_df.dropna(inplace=True)
+
+orders_df['name'] = orders_df['name'].str.strip()
+
+def recommend_aprior():
+   
+
+    basket = (orders_df.groupby(['personEmail', 'name'])['name']
+            .count().unstack().reset_index().fillna(0)
+            .set_index('personEmail'))
+
+    # Convert to binary
+    basket = basket.apply(lambda x: x > 0)
+
+    frequent_itemsets = apriori(basket, min_support=0.01, use_colnames=True)
+
+    rules = association_rules(frequent_itemsets, metric='support', min_threshold=0.01)
+
+    recommendations = rules[['antecedents', 'consequents', 'support']].sort_values(by='support', ascending=False)
+
+    print(recommendations)
+    top_three_support = recommendations.head(5)
+
+    consequent_names = []
+    for index, row in top_three_support.iterrows():
+        consequent_names.extend(row['consequents'])
+        
+    unique_consequents = list(set(consequent_names))  # Extract unique consequent names
+    
+    return unique_consequents
+
+
+def recommend_apriori(antecedent):
+    basket = (orders_df.groupby(['personEmail', 'name'])['name']
+            .count().unstack().reset_index().fillna(0)
+            .set_index('personEmail'))
+
+    # Convert to binary
+    basket = basket.apply(lambda x: x > 0)
+
+    frequent_itemsets = apriori(basket, min_support=0.01, use_colnames=True)
+
+    rules = association_rules(frequent_itemsets, metric='support', min_threshold=0.01)
+
+    # Filter rules based on the antecedent
+    filtered_rules = rules[rules['antecedents'] == frozenset([antecedent])]
+    
+    # Sort filtered rules by support in descending order
+    filtered_rules = filtered_rules.sort_values(by='support', ascending=False)
+
+    # Get the top related products as a set
+    top_related_products = set(filtered_rules.head(5)['consequents'])
+
+    # Convert the set to a list if needed
+    top_related_products_list = list(top_related_products)
+
+    return top_related_products_list
 
 def recommend_products(person):
     person_data = merged_df[merged_df['personEmail'] == person]
     print(person_data)
-    # Count occurrences of each section ID
+
     section_id_counts = person_data['sectionId'].value_counts()
     
     # Filter section IDs occurring less than 2 times
@@ -136,6 +195,19 @@ def get_recommendations():
     response = {'recommendations': recommendations}
     
     return jsonify(response)  
+
+@app.route('/apriori', methods=['GET'])
+def get_relatedproducts():
+    product = request.args.get('product')
+    
+    recommendations = recommend_apriori(product)
+    
+    # Flatten the nested lists and ensure uniqueness
+    flat_recommendations = list(set([item for sublist in recommendations for item in sublist]))
+  
+    response = {'recommendations': flat_recommendations}
+    return jsonify(response)
+
 
 if __name__ == '__main__':
     app.run(debug=True)
